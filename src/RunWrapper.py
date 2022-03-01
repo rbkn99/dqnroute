@@ -51,14 +51,13 @@ if __name__ == "__main__":
 
     run(command, *config, command_args+(
         #"--skip_graphviz --verification_lr 0.001"
-        #"--force_train"
-        "--skip_graphviz"
+        # "--skip_graphviz"
         #"--skip_graphviz --single_source 1 --single_sink 3"
         #"--skip_graphviz --single_source 1 --single_sink 2"
         #"--skip_graphviz --single_source 0 --single_sink 1"
         #"--skip_graphviz --single_source 2 --single_sink 0"
         #"--force_pretrain --force_train"
-        #"--skip_graphviz --force_pretrain --force_train"
+        "--skip_graphviz --force_pretrain --force_train"
         #"--skip_graphviz --force_train"
         #"--skip_graphviz --single_source 1 --single_sink 3 --input_max_delta_q 20 --learning_step_indices 1,2,3,8"
         #"--skip_graphviz --single_source 0 --single_sink 1 --input_max_delta_q 10 --learning_step_indices 17,22,23,24"

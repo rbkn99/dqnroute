@@ -22,7 +22,7 @@ from dqnroute.constants import TORCH_MODELS_DIR
 from dqnroute.event_series import split_dataframe
 from dqnroute.generator import gen_episodes
 from dqnroute.networks.common import get_optimizer
-from dqnroute.networks.embeddings import Embedding, LaplacianEigenmap
+from dqnroute.networks.embeddings import Embedding, Node2VecWrapper, LaplacianEigenmap
 from dqnroute.networks.q_network import QNetwork
 from dqnroute.networks.actor_critic_networks import PPOActor, PPOCritic
 from dqnroute.simulation.common import mk_job_id, add_cols, DummyProgressbarQueue
@@ -443,8 +443,8 @@ if dqn_emb_exists:
 
     print(f'Model: {pretrain_path}')
 
-    dqn_combined_model_results = dqn_experiments(1, True, True, True, False, True)
-    dqn_single_model_results = dqn_experiments(1, False, True, True, False, True)
+    # dqn_combined_model_results = dqn_experiments(1, True, True, True, True, True)
+    dqn_single_model_results = dqn_experiments(1, False, True, True, True, True)
 
 
 # PPO part (pre-train + train)
@@ -1056,7 +1056,7 @@ if args.command == "run":
 
     if dqn_emb_exists:
         single_series = get_results(dqn_single_model_results, 'DQN-LE-SINGLE')
-        combined_series = get_results(dqn_combined_model_results, 'DQN-LE-COMBINED')
+        # combined_series = get_results(dqn_combined_model_results, 'DQN-LE-COMBINED')
 
 
     if ppo_emb_exists:
