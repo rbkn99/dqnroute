@@ -138,6 +138,9 @@ class LaplacianEigenmap(Embedding):
     def transform(self, idx):
         return self._X[idx]
 
+    def transform_all(self):
+        return self._X
+
 
 class Node2VecWrapper(Embedding):
     def __init__(self, dim, walk_length=20, context_size=10,
@@ -155,15 +158,21 @@ class Node2VecWrapper(Embedding):
         self.sparse = sparse
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    def fit(self, graph: Union[nx.DiGraph, np.ndarray], batch_size=128, num_workers=1, shuffle=True, lr=0.01):
+    def fit(self, graph: Union[nx.DiGraph, np.ndarray], batch_size=128, num_workers=1, shuffle=True, lr=0.01,
+            use_pretrained_laplacian=True):
         if type(graph) == np.ndarray:
             graph = nx.from_numpy_array(graph, create_using=nx.DiGraph)
         graph = nx.relabel_nodes(graph.to_undirected(), agent_idx)
         edge_index = torch.from_numpy(np.asarray(graph.edges()).T).to(self.device)
+        pretrained_emb = None
+        if use_pretrained_laplacian:
+            laplacian_emb = LaplacianEigenmap(self.dim)
+            laplacian_emb.fit(graph)
+            pretrained_emb = laplacian_emb.transform_all()
 
         self.model = Node2Vec(edge_index, self.dim, self.walk_length, self.context_size,
                               self.walks_per_node, self.p, self.q,
-                              self.num_negative_samples, self.num_nodes, self.sparse).to(self.device)
+                              self.num_negative_samples, self.num_nodes, self.sparse, pretrained_emb).to(self.device)
         loader = self.model.loader(batch_size=batch_size, shuffle=shuffle, num_workers=0)
         optimizer = torch.optim.Adam(list(self.model.parameters()), lr=lr)
         self.model.train()

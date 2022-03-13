@@ -22,7 +22,7 @@ from dqnroute.constants import TORCH_MODELS_DIR
 from dqnroute.event_series import split_dataframe
 from dqnroute.generator import gen_episodes
 from dqnroute.networks.common import get_optimizer
-from dqnroute.networks.embeddings import Embedding, Node2VecWrapper, LaplacianEigenmap
+from dqnroute.networks.embeddings import Embedding, Node2VecWrapper
 from dqnroute.networks.q_network import QNetwork
 from dqnroute.networks.actor_critic_networks import PPOActor, PPOCritic
 from dqnroute.simulation.common import mk_job_id, add_cols, DummyProgressbarQueue
@@ -302,7 +302,7 @@ def pretrain_dqn(
     data_conv.loc[:, "working"] = 1.0
     shuffled_data = data_conv.sample(frac=1)
 
-    conv_emb = CachedEmbedding(LaplacianEigenmap, dim=emb_dim)
+    conv_emb = CachedEmbedding(Node2VecWrapper, dim=emb_dim)
 
     network_args = {
         'scope': dir_with_models,
@@ -585,7 +585,7 @@ def pretrain_ppo(
     )
     shuffled_data = data.sample(frac=1)
 
-    conv_emb = CachedEmbedding(LaplacianEigenmap, dim=emb_dim)
+    conv_emb = CachedEmbedding(Node2VecWrapper, dim=emb_dim)
 
     actor_args = {
         'scope': dir_with_models,
@@ -806,7 +806,7 @@ def pretrain_reinforce(
     )
     shuffled_data = data.sample(frac=1)
 
-    conv_emb = CachedEmbedding(LaplacianEigenmap, dim=emb_dim)
+    conv_emb = CachedEmbedding(Node2VecWrapper, dim=emb_dim)
 
     actor_args = {
         'scope': dir_with_models,

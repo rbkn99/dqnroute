@@ -53,7 +53,7 @@ class Node2Vec(torch.nn.Module):
     """
     def __init__(self, edge_index, embedding_dim, walk_length, context_size,
                  walks_per_node=1, p=1, q=1, num_negative_samples=1,
-                 num_nodes=None, sparse=False):
+                 num_nodes=None, sparse=False, pretrained_emb=None):
         super().__init__()
 
         if random_walk is None:
@@ -75,6 +75,8 @@ class Node2Vec(torch.nn.Module):
         self.num_negative_samples = num_negative_samples
 
         self.embedding = Embedding(N, embedding_dim, sparse=sparse)
+        if pretrained_emb:
+            self.embedding.weight.data.copy_(pretrained_emb)
 
         self.reset_parameters()
 
