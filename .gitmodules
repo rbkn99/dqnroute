@@ -1,3 +1,6 @@
 [submodule "GEM"]
 	path = GEM
 	url = git@github.com:flyingleafe/GEM.git
+[submodule "CTGCN"]
+	path = CTGCN
+	url = https://github.com/rbkn99/CTGCN.git

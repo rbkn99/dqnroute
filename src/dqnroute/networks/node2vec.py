@@ -75,7 +75,7 @@ class Node2Vec(torch.nn.Module):
         self.num_negative_samples = num_negative_samples
 
         self.embedding = Embedding(N, embedding_dim, sparse=sparse)
-        if pretrained_emb:
+        if pretrained_emb is not None:
             self.embedding.weight.data.copy_(pretrained_emb)
 
         self.reset_parameters()

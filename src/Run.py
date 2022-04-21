@@ -22,12 +22,12 @@ from dqnroute.constants import TORCH_MODELS_DIR
 from dqnroute.event_series import split_dataframe
 from dqnroute.generator import gen_episodes
 from dqnroute.networks.common import get_optimizer
-from dqnroute.networks.embeddings import Embedding, Node2VecWrapper
+from dqnroute.networks.embeddings import Embedding, emb_classes
 from dqnroute.networks.q_network import QNetwork
 from dqnroute.networks.actor_critic_networks import PPOActor, PPOCritic
 from dqnroute.simulation.common import mk_job_id, add_cols, DummyProgressbarQueue
 from dqnroute.simulation.conveyors import ConveyorsRunner
-from dqnroute.utils import AgentId, get_amatrix_cols, make_batches, stack_batch, mk_num_list
+from dqnroute.utils import AgentId, get_amatrix_cols, make_batches, stack_batch, mk_num_list, save_object
 
 from dqnroute.verification.ml_util import Util
 from dqnroute.verification.router_graph import RouterGraph
@@ -52,6 +52,8 @@ parser.add_argument("config_files", type=str, nargs="+",
 parser.add_argument("--routing_algorithms", type=str, default="dqn_emb,centralized_simple,link_state,simple_q,ppo_emb",
                     help="comma-separated list of routing algorithms to run "
                          "(possible entries: dqn_emb, centralized_simple, link_state, simple_q, ppo_emb, random)")
+parser.add_argument("--embeddings_alg", type=str, default="lap",
+                    help="possible node embeddings: lap, hope, node2vec")
 parser.add_argument("--command", type=str, default="run",
                     help="possible options: run, compute_expected_cost, embedding_adversarial_search, "
                          "embedding_adversarial_verification, q_adversarial_search, q_adversarial_verification")
@@ -124,6 +126,10 @@ assert len(router_types) > 0, '--routing_algorithms cannot be empty'
 router_types = re.split(', *', args.routing_algorithms)
 assert len(set(router_types) - set(router_types_supported)) == 0, \
     f'unsupported algorithm in --routing_algorithms was found; supported ones: {router_types_supported}'
+embeddings_alg_name = args.embeddings_alg
+assert embeddings_alg_name in emb_classes, \
+    f'unsupported algorithm in --embeddings_alg was found; supported ones: {emb_classes.keys()}'
+EmbeddingClass = emb_classes[embeddings_alg_name]
 
 dqn_emb_exists = 'dqn_emb' in router_types
 ppo_emb_exists = 'ppo_emb' in router_types
@@ -172,8 +178,11 @@ def gen_episodes_progress(router_type, num_episodes, **kwargs):
 
 
 class CachedEmbedding(Embedding):
-    def __init__(self, InnerEmbedding, dim, **kwargs):
+    def __init__(self, InnerEmbedding, dim, _dir_with_models, **kwargs):
         super().__init__(dim, **kwargs)
+        self.scope = 'torch_models/' + _dir_with_models + '_embeddings'
+        os.makedirs(self.scope, exist_ok=True)
+        self.label = pretrain_filename
 
         self.InnerEmbedding = InnerEmbedding
         self.inner_kwargs = kwargs
@@ -233,7 +242,7 @@ def pretrain_dqn(
         pretrain_dataset_filename: str = None,
         use_full_topology: bool = True,
 ):
-    def qnetwork_batches(net, data, batch_size=64, embedding=None):
+    def qnetwork_batches(net, data, embedding, batch_size=64):
         n = graph_size
         data_cols = []
         amatrix_cols = get_amatrix_cols(n)
@@ -262,9 +271,9 @@ def pretrain_dqn(
             output = torch.FloatTensor(batch["predict"].values)
             yield (addr_inp, dst_inp, nbr_inp) + inputs, output
 
-    def qnetwork_pretrain_epoch(net, optimizer, data, **kwargs):
+    def qnetwork_pretrain_epoch(net, optimizer, data, embedding, **kwargs):
         loss_func = torch.nn.MSELoss()
-        for batch, target in qnetwork_batches(net, data, **kwargs):
+        for batch, target in qnetwork_batches(net, data, embedding, **kwargs):
             optimizer.zero_grad()
             output = net(*batch)
             loss = loss_func(output, target.unsqueeze(1))
@@ -275,10 +284,11 @@ def pretrain_dqn(
     def qnetwork_pretrain(net, data, optimizer="rmsprop", **kwargs):
         optimizer = get_optimizer(optimizer)(net.parameters())
         epochs_losses = []
+        embedding = kwargs.pop('embedding', None)
         for _ in tqdm(range(num_epochs), desc='DQN Pretraining...'):
             sum_loss = 0
             loss_cnt = 0
-            for loss in qnetwork_pretrain_epoch(net, optimizer, data, **kwargs):
+            for loss in qnetwork_pretrain_epoch(net, optimizer, data, embedding, **kwargs):
                 sum_loss += loss
                 loss_cnt += 1
             epochs_losses.append(sum_loss / loss_cnt)
@@ -287,6 +297,8 @@ def pretrain_dqn(
             net.change_label(pretrain_filename)
             # net._label = pretrain_filename
             net.save()
+        if embedding is not None:
+            save_object(embedding, embedding.scope, embedding.label)
         return epochs_losses
 
     data_conv = gen_episodes_progress(
@@ -302,7 +314,7 @@ def pretrain_dqn(
     data_conv.loc[:, "working"] = 1.0
     shuffled_data = data_conv.sample(frac=1)
 
-    conv_emb = CachedEmbedding(Node2VecWrapper, dim=emb_dim)
+    conv_emb = CachedEmbedding(EmbeddingClass, dim=emb_dim, _dir_with_models=dir_with_models)
 
     network_args = {
         'scope': dir_with_models,
@@ -336,6 +348,7 @@ def train_dqn(
     scenario["settings"]["router"][router_type]["use_reinforce"] = use_reinforce
     scenario["settings"]["router"][router_type]["use_combined_model"] = use_combined_model
     scenario["settings"]["router"][router_type]["scope"] = dir_with_models
+    scenario["settings"]["router"][router_type]["embedding_scope"] = 'torch_models/' + dir_with_models + '_embeddings'
     scenario["settings"]["router"][router_type]["load_filename"] = pretrain_filename
 
     if retrain:
@@ -585,7 +598,7 @@ def pretrain_ppo(
     )
     shuffled_data = data.sample(frac=1)
 
-    conv_emb = CachedEmbedding(Node2VecWrapper, dim=emb_dim)
+    conv_emb = CachedEmbedding(EmbeddingClass, dim=emb_dim, _dir_with_models=dir_with_models)
 
     actor_args = {
         'scope': dir_with_models,
@@ -806,7 +819,7 @@ def pretrain_reinforce(
     )
     shuffled_data = data.sample(frac=1)
 
-    conv_emb = CachedEmbedding(Node2VecWrapper, dim=emb_dim)
+    conv_emb = CachedEmbedding(EmbeddingClass, dim=emb_dim, _dir_with_models=dir_with_models)
 
     actor_args = {
         'scope': dir_with_models,

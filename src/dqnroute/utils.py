@@ -6,6 +6,8 @@ import networkx as nx
 import numpy as np
 import torch
 import itertools as it
+import os
+import pickle
 
 from typing import NewType, Tuple, TypeVar, Union, List, Callable, Optional, Any, Iterable
 from copy import deepcopy
@@ -800,3 +802,13 @@ def def_list(ls, default=[]):
     elif isinstance(ls, Iterable) and not (type(ls) == str):
         return list(ls)
     return [ls]
+
+
+def save_object(obj, scope, label):
+    with open(os.path.abspath(os.path.join(scope, label)), 'wb') as out:
+        pickle.dump(obj, out, pickle.HIGHEST_PROTOCOL)
+
+
+def load_object(scope, label):
+    with open(os.path.abspath(os.path.join(scope, label)), 'rb') as inp:
+        return pickle.load(inp)

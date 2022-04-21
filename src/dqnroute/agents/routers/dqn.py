@@ -256,12 +256,12 @@ class DQNRouterEmb(DQNRouterOO):
         self.prev_num_edges = 0
         self.init_edges_num = edges_num
         self.network_initialized = False
-
+        # if 'load_filename' in kwargs and 'embedding_scope' in kwargs:
+        #     self.embedding = load_object(kwargs['embedding_scope'], kwargs['load_filename'])
         if type(embedding) == dict:
             self.embedding = get_embedding(**embedding)
         else:
             self.embedding = embedding
-
         super().__init__(**kwargs)
 
     def _makeBrain(self, additional_inputs=[], **kwargs):

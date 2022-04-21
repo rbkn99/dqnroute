@@ -168,7 +168,7 @@ class Node2VecWrapper(Embedding):
         if use_pretrained_laplacian:
             laplacian_emb = LaplacianEigenmap(self.dim)
             laplacian_emb.fit(graph)
-            pretrained_emb = laplacian_emb.transform_all()
+            pretrained_emb = torch.from_numpy(laplacian_emb.transform_all())
 
         self.model = Node2Vec(edge_index, self.dim, self.walk_length, self.context_size,
                               self.walks_per_node, self.p, self.q,
@@ -188,7 +188,7 @@ class Node2VecWrapper(Embedding):
         return self.model.embedding.weight[idx].detach().numpy()
 
 
-_emb_classes = {
+emb_classes = {
     'hope': HOPEEmbedding,
     'lap': LaplacianEigenmap,
     'node2vec': Node2VecWrapper
@@ -197,6 +197,6 @@ _emb_classes = {
 
 def get_embedding(alg: str, **kwargs):
     try:
-        return _emb_classes[alg](**kwargs)
+        return emb_classes[alg](**kwargs)
     except KeyError:
         raise Exception('Unsupported embedding algorithm: ' + alg)
