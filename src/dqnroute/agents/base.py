@@ -382,25 +382,25 @@ class RewardAgent(object):
         self._pending_pkgs = {}
         self._debug_pkgs = {}
 
-    def registerResentPkg(self, pkg: Package, Q_estimate: float, action, data, **kwargs) -> RewardMsg:
+    def registerResentPkg(self, pkg: Package, Q_estimate: float, action, data, agents, **kwargs) -> RewardMsg:
         rdata = self._getRewardData(pkg, data)
-        self._pending_pkgs[pkg.id] = (action, rdata, data)
+        self._pending_pkgs[pkg.id] = (action, rdata, data, agents)
         
         # Igor Buzhinsky's hack to suppress a no-key exception in receiveReward
-        self._last_tuple = action, rdata, data
+        self._last_tuple = action, rdata, data, agents
         
         return self._mkReward(pkg, Q_estimate, rdata)
 
     def receiveReward(self, msg: RewardMsg):
         try:
-            action, old_reward_data, saved_data = self._pending_pkgs.pop(msg.pkg.id)
+            action, old_reward_data, saved_data, agents = self._pending_pkgs.pop(msg.pkg.id)
         except KeyError:
             self.log(f'not our package: {msg.pkg}, path:\n  {msg.pkg.node_path}\n', force=True)
             #raise
             # Igor Buzhinsky's hack to suppress a no-key exception in receiveReward
-            action, old_reward_data, saved_data = self._last_tuple
+            action, old_reward_data, saved_data, agents = self._last_tuple
         reward = self._computeReward(msg, old_reward_data)
-        return action, reward, saved_data
+        return action, reward, saved_data, agents
 
     def _computeReward(self, msg: RewardMsg, old_reward_data):
         raise NotImplementedError()

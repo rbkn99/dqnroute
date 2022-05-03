@@ -6,6 +6,7 @@ import torch
 import scipy.sparse as sp
 
 from .node2vec import Node2Vec
+from .sdne import DynGEM, DynGEMLoss, DynGEMBatchGenerator
 from typing import Union
 from ..utils import agent_idx
 
@@ -159,16 +160,16 @@ class Node2VecWrapper(Embedding):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     def fit(self, graph: Union[nx.DiGraph, np.ndarray], batch_size=128, num_workers=1, shuffle=True, lr=0.01,
-            use_pretrained_laplacian=True):
+            use_pretrained_laplacian=True, weight='weight', **kwargs):
         if type(graph) == np.ndarray:
             graph = nx.from_numpy_array(graph, create_using=nx.DiGraph)
         graph = nx.relabel_nodes(graph.to_undirected(), agent_idx)
         edge_index = torch.from_numpy(np.asarray(graph.edges()).T).to(self.device)
         pretrained_emb = None
-        if use_pretrained_laplacian:
-            laplacian_emb = LaplacianEigenmap(self.dim)
-            laplacian_emb.fit(graph)
-            pretrained_emb = torch.from_numpy(laplacian_emb.transform_all())
+        # if use_pretrained_laplacian:
+        #     laplacian_emb = LaplacianEigenmap(self.dim)
+        #     laplacian_emb.fit(graph, weight=None)
+        #     pretrained_emb = torch.from_numpy(laplacian_emb.transform_all())
 
         self.model = Node2Vec(edge_index, self.dim, self.walk_length, self.context_size,
                               self.walks_per_node, self.p, self.q,
@@ -188,10 +189,63 @@ class Node2VecWrapper(Embedding):
         return self.model.embedding.weight[idx].detach().numpy()
 
 
+class SDNE(Embedding):
+    def __init__(self, dim, **kwargs):
+        super().__init__(dim, **kwargs)
+        self.dim = dim
+        self.model = None
+        self.graph = None
+
+    def fit(self, graph: Union[nx.DiGraph, np.ndarray],
+            n_units=None, epoch=20, batch_size = 64,
+            lr=0.01, weight_decay=0, alpha=1e-5, beta=10, nu1=1e-4, nu2=1e-4, **kwargs):
+        if n_units is None:
+            n_units = [15]
+        if type(graph) == np.ndarray:
+            graph = nx.from_numpy_array(graph, create_using=nx.DiGraph)
+        self.graph = nx.adjacency_matrix(nx.relabel_nodes(graph.to_undirected(), agent_idx))
+        self.model = DynGEM(self.graph.shape[0], self.dim, n_units=n_units)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer.zero_grad()
+        loss_model = DynGEMLoss(alpha, beta, nu1, nu2)
+        batch_generator = DynGEMBatchGenerator(batch_size, beta)
+        for i in range(epoch):
+            generator = batch_generator.generate(self.graph)
+            loss_input_list = self._get_model_res(generator)
+            loss = loss_model(self.model, loss_input_list)
+            loss.backward()
+            optimizer.step()
+            self.model.zero_grad()
+            # print("epoch", i + 1, ', loss:', loss.item())
+
+    def propagate(self, graph, gradient, lr=0.01, weight_decay=0):
+        if type(graph) == np.ndarray:
+            graph = nx.from_numpy_array(graph, create_using=nx.DiGraph)
+        self.graph = nx.adjacency_matrix(nx.relabel_nodes(graph.to_undirected(), agent_idx))
+        optimizer = torch.optim.Adam(self.model.encoder.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer.zero_grad()
+        output = self.model.encoder(torch.from_numpy(self.graph.toarray()).float())
+        output.backward(gradient=gradient)
+        optimizer.step()
+        self.model.zero_grad()
+
+
+    def transform(self, idx):
+        row = torch.from_numpy(self.graph[idx].toarray()).float()
+        return self.model(row)[0].detach().numpy()
+
+    def _get_model_res(self, generator):
+        [xi_batch, xj_batch], [yi_batch, yj_batch, value_batch] = next(generator)
+        hx_i, xi_pred = self.model(xi_batch)
+        hx_j, xj_pred = self.model(xj_batch)
+        return [xi_pred, xi_batch, yi_batch, xj_pred, xj_batch, yj_batch, hx_i, hx_j, value_batch]
+
+
 emb_classes = {
     'hope': HOPEEmbedding,
     'lap': LaplacianEigenmap,
-    'node2vec': Node2VecWrapper
+    'node2vec': Node2VecWrapper,
+    'sdne': SDNE
 }
 
 

@@ -29,7 +29,7 @@ class SimpleQRouter(Router, RewardAgent):
     def route(self, sender: AgentId, pkg: Package, allowed_nbrs: List[AgentId]) -> Tuple[AgentId, List[Message]]:
         Qs = self._Q(pkg.dst, allowed_nbrs)
         to, estimate = dict_min(Qs)
-        reward_msg = self.registerResentPkg(pkg, estimate, to, pkg.dst)
+        reward_msg = self.registerResentPkg(pkg, estimate, to, pkg.dst, (self.id[1], pkg.dst[1]))
 
         return to, [OutMessage(self.id, sender, reward_msg)] if sender[0] != 'world' else []
 
@@ -78,7 +78,7 @@ class PredictiveQRouter(SimpleQRouter, RewardAgent):
         Qs_altered = self._Q_altered(pkg.dst, allowed_nbrs)
         to, _ = dict_min(Qs_altered)
         estimate = min(Qs.values())
-        reward_msg = self.registerResentPkg(pkg, estimate, to, pkg.dst)
+        reward_msg = self.registerResentPkg(pkg, estimate, to, pkg.dst, (self.id[1], pkg.dst[1]))
 
         return to, [OutMessage(self.id, sender, reward_msg)] if sender[0] != 'world' else []
 

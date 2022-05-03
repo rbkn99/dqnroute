@@ -42,7 +42,14 @@ settings:
       energy_reward_weight: 0.5
       additional_inputs: []
       embedding:
-        alg: 'lap'
+        alg: 'sdne'
+        dim: 10
+    dqn_qemb:
+      <<: *dqn
+      energy_reward_weight: 0.5
+      additional_inputs: [ ]
+      embedding:
+        alg: 'sdne'
         dim: 10
     ppo_emb:
       distance_function: 'euclid'
@@ -58,7 +65,7 @@ settings:
         layers: [ 64, 64 ]
         activation: 'relu'
       embedding:
-        alg: 'lap'
+        alg: 'node2vec'
         dim: 10
     reinforce_emb:
       distance_function: 'euclid'
@@ -70,8 +77,8 @@ settings:
         layers: [ 64, 64 ]
         activation: 'relu'
       embedding:
-        alg: 'lap'
+        alg: 'sdne'
         dim: 10
     embedding:
-      alg: 'lap'
+      alg: 'sdne'
       dim: 10

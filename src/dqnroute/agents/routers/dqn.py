@@ -100,14 +100,14 @@ class DQNRouter(LinkStateRouter, RewardAgent):
         if self.max_act_time is not None and self.env.time() > self.max_act_time:
             return super().route(sender, pkg, allowed_nbrs)
         else:
-            to, estimate, saved_state = self._act(pkg, allowed_nbrs)
-            reward = self.registerResentPkg(pkg, estimate, to, saved_state)
+            to, estimate, saved_state, agents = self._act(pkg, allowed_nbrs)
+            reward = self.registerResentPkg(pkg, estimate, to, saved_state, agents)
             return to, [OutMessage(self.id, sender, reward)] if sender[0] != 'world' else []
 
     def handleMsgFrom(self, sender: AgentId, msg: Message) -> List[Message]:
         if isinstance(msg, RewardMsg):
-            action, Q_new, prev_state = self.receiveReward(msg)
-            self.memory.add((prev_state, action[1], -Q_new))
+            action, Q_new, prev_state, agents = self.receiveReward(msg)
+            self.memory.add((prev_state, action[1], -Q_new, agents))
 
             if self.use_reinforce:
                 self._replay()
@@ -128,7 +128,7 @@ class DQNRouter(LinkStateRouter, RewardAgent):
         while ('router', to) not in allowed_nbrs:
             to = sample_distr(distr)
 
-        return ('router', to), estimate, state
+        return ('router', to), estimate, state, (self.id[1], pkg.dst[1])
 
     def _predict(self, x):
         self.brain.eval()
@@ -183,14 +183,15 @@ class DQNRouter(LinkStateRouter, RewardAgent):
         states = stack_batch([l[0] for l in batch])
         actions = [l[1] for l in batch]
         values = [l[2] for l in batch]
+        agents = [l[3] for l in batch]
 
-        return states, actions, values
+        return states, actions, values, agents
 
     def _replay(self):
         """
         Fetches a batch of samples from the memory and fits against them.
         """
-        states, actions, values = self._sampleMemStacked()
+        states, actions, values, _ = self._sampleMemStacked()
         preds = self._predict(states)
 
         for i in range(self.batch_size):
@@ -221,7 +222,7 @@ class DQNRouterOO(DQNRouter):
 
         saved_state = [s[to_idx] for s in state]
         to = allowed_nbrs[to_idx]
-        return to, estimate, saved_state
+        return to, estimate, saved_state, (self.id[1], pkg.dst[1])
 
     def _nodeRepr(self, node):
         return np.array(node)
@@ -241,7 +242,7 @@ class DQNRouterOO(DQNRouter):
         return stack_batch(input)
 
     def _replay(self):
-        states, _, values = self._sampleMemStacked()
+        states, _, values, _ = self._sampleMemStacked()
         self._train(states, np.expand_dims(np.array(values, dtype=np.float32), axis=0))
 
 
@@ -293,15 +294,88 @@ class DQNRouterEmb(DQNRouterOO):
             # self.log(pprint.pformat(self.embedding._X), force=self.id[1] == 0)
 
 
+class EmbGlobalInstance(object):
+    def __init__(self, embedding, emb_batch_size):
+        self.embedding = embedding
+        self.emb_batch_size = emb_batch_size
+        self.adj_batch = None
+        self.replay_counter = 0
+        self.network_initialized = False
+        self.nodes_len = 0
+        self.network = None
+
+    def fit_emb(self, network):
+        if self.network_initialized:
+            return
+        self.network_initialized = True
+        self.adj_batch = np.zeros((len(network.nodes), self.embedding.dim))
+        self.replay_counter = 0
+        self.network = network
+        self.nodes_len = len(network.nodes)
+        self.embedding.fit(network)
+
+    def update(self, agents, batch_size, addr_grad, dst_grad):
+        self.adj_batch[agents[0][0], :] += addr_grad.detach().numpy()[0]
+        self.adj_batch[agents[0][1], :] += dst_grad.detach().numpy()[0]
+        self.replay_counter += 1
+        if self.replay_counter >= self.emb_batch_size:
+            assert isinstance(self.embedding, SDNE), 'QEmb currently supports SDNE only!'
+            self.replay_counter = 0
+            self.embedding.propagate(self.network, torch.from_numpy(self.adj_batch))
+            self.adj_batch = np.zeros((self.nodes_len, self.embedding.dim))
+
+
+embInstance: EmbGlobalInstance = None
+
+
+class DQNRouterQEmb(DQNRouterEmb):
+    def __init__(self, embedding: Union[dict, Embedding], edges_num: int, emb_batch_size=64, **kwargs):
+        super().__init__(embedding, edges_num, **kwargs)
+        global embInstance
+        if embInstance is None:
+            embInstance = EmbGlobalInstance(self.embedding, emb_batch_size)
+
+    def networkStateChanged(self):
+        num_nodes = len(self.network.nodes)
+        num_edges = len(self.network.edges)
+        if not self.network_initialized and num_nodes == len(self.nodes) and num_edges == self.init_edges_num:
+            embInstance.fit_emb(self.network)
+
+    def _train(self, x, y):
+        self.brain.train()
+        self.optimizer.zero_grad()
+        addr, dst = torch.from_numpy(x[0]), torch.from_numpy(x[1])
+        addr.requires_grad = True
+        dst.requires_grad = True
+        output = self.brain(addr, dst, *map(torch.from_numpy, x[2:]))
+        loss = self.loss_func(output, torch.from_numpy(y))
+        loss.backward()
+        self.optimizer.step()
+        return float(loss), addr.grad, dst.grad
+
+    def _replay(self):
+        states, _, values, agents = self._sampleMemStacked()
+        _, addr_grad, dst_grad = self._train(states, np.expand_dims(np.array(values, dtype=np.float32), axis=0))
+        embInstance.update(agents, self.batch_size, addr_grad, dst_grad)
+
+    def _nodeRepr(self, node):
+        return embInstance.embedding.transform(node).astype(np.float32)
+
+
 class DQNRouterNetwork(NetworkRewardAgent, DQNRouter):
     pass
+
 
 class DQNRouterOONetwork(NetworkRewardAgent, DQNRouterOO):
     pass
 
+
 class DQNRouterEmbNetwork(NetworkRewardAgent, DQNRouterEmb):
     pass
 
+
+class DQNRouterQEmbNetwork(NetworkRewardAgent, DQNRouterQEmb):
+    pass
 
 class ConveyorAddInputMixin:
     """

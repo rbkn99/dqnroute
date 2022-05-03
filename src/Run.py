@@ -49,9 +49,9 @@ parser = argparse.ArgumentParser(
 parser.add_argument("config_files", type=str, nargs="+",
                     help="YAML config file(s) with the conveyor topology graph, input scenario and settings "
                          "of routing algorithms (all files will be concatenated into one)")
-parser.add_argument("--routing_algorithms", type=str, default="dqn_emb,centralized_simple,link_state,simple_q,ppo_emb",
+parser.add_argument("--routing_algorithms", type=str, default="dqn_emb,dqn_qemb,centralized_simple,link_state,simple_q,ppo_emb",
                     help="comma-separated list of routing algorithms to run "
-                         "(possible entries: dqn_emb, centralized_simple, link_state, simple_q, ppo_emb, random)")
+                         "(possible entries: dqn_emb, dqn_qemb, centralized_simple, link_state, simple_q, ppo_emb, random)")
 parser.add_argument("--embeddings_alg", type=str, default="lap",
                     help="possible node embeddings: lap, hope, node2vec")
 parser.add_argument("--command", type=str, default="run",
@@ -120,7 +120,7 @@ parser.add_argument("--linux_marabou_memory_limit_mb", type=int, default=None,
 args = parser.parse_args()
 
 # dqn_emb = DQNroute-LE, centralized_simple = BSR
-router_types_supported = 'dqn_emb ppo_emb centralized_simple link_state simple_q reinforce_emb'.split(' ')
+router_types_supported = 'dqn_emb dqn_qemb ppo_emb centralized_simple link_state simple_q reinforce_emb'.split(' ')
 router_types = args.routing_algorithms
 assert len(router_types) > 0, '--routing_algorithms cannot be empty'
 router_types = re.split(', *', args.routing_algorithms)
@@ -132,9 +132,10 @@ assert embeddings_alg_name in emb_classes, \
 EmbeddingClass = emb_classes[embeddings_alg_name]
 
 dqn_emb_exists = 'dqn_emb' in router_types
+dqn_qemb_exists = 'dqn_qemb' in router_types
 ppo_emb_exists = 'ppo_emb' in router_types
 reinforce_emb_exists = 'reinforce_emb' in router_types
-nn_loading_needed = "dqn_emb" in router_types or args.command != "run"
+nn_loading_needed = "dqn_emb" in router_types or "dqn_qemb" in router_types or args.command != "run"
 
 random_seed = args.random_seed
 
@@ -416,7 +417,7 @@ def dqn_experiments(
             print('Training DQN Model...')
             dqn_log, dqn_world = train_dqn(
                 train_data_size,
-                'dqn_emb',
+                'dqn_qemb',
                 dir_with_models,
                 pretrain_filename,
                 train_filename,
@@ -435,10 +436,10 @@ def dqn_experiments(
 
 
 # whole pipeline
-if dqn_emb_exists:
+if dqn_qemb_exists or dqn_emb_exists:
     dqn_serieses = []
 
-    dqn_emp_config = scenario['settings']['router']['dqn_emb']
+    dqn_emp_config = scenario['settings']['router']['dqn_qemb' if dqn_qemb_exists else 'dqn_emb']
 
     dir_with_models = 'conveyor_models_dqn'
 
@@ -1024,12 +1025,12 @@ if args.command == "run":
         "networks": {
             "link_state": "Shortest paths", "simple_q": "Q-routing", "pred_q": "PQ-routing",
             "glob_dyn": "Global-dynamic", "dqn": "DQN", "dqn_oneout": "DQN (1-out)",
-            "dqn_emb": "DQN-LE", "centralized_simple": "Centralized control", "ppo_emb": "PPO",
+            "dqn_emb": "DQN-LE", "dqn_qemb": "DQN-LE", "centralized_simple": "Centralized control", "ppo_emb": "PPO",
             'reinforce_emb': 'REINFORCE'
         }, "conveyors": {
             "link_state": "Vyatkin-Black", "simple_q": "Q-routing", "pred_q": "PQ-routing",
             "glob_dyn": "Global-dynamic", "dqn": "DQN", "dqn_oneout": "DQN (1-out)",
-            "dqn_emb": "DQN-LE", "centralized_simple": "BSR", "ppo_emb": "PPO",
+            "dqn_emb": "DQN-LE", "dqn_qemb": "DQN-LE", "centralized_simple": "BSR", "ppo_emb": "PPO",
             'reinforce_emb': 'REINFORCE'
         }
     }
@@ -1067,7 +1068,7 @@ if args.command == "run":
 
         return basic_series
 
-    if dqn_emb_exists:
+    if dqn_emb_exists or dqn_qemb_exists:
         single_series = get_results(dqn_single_model_results, 'DQN-LE-SINGLE')
         # combined_series = get_results(dqn_combined_model_results, 'DQN-LE-COMBINED')
 
@@ -1092,7 +1093,8 @@ if args.command == "run":
 
     # perform training/simulation with other approaches
     for router_type in router_types:
-        if router_type != "dqn_emb" and router_type != 'ppo_emb' and router_type != 'reinforce_emb':
+        if router_type != "dqn_emb" and router_type != "dqn_qemb" \
+                and router_type != 'ppo_emb' and router_type != 'reinforce_emb':
             s, _ = train(train_data_size, router_type, random_seed)
             series += [s.getSeries(add_avg=True)]
             series_types += [router_type]
