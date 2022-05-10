@@ -22,7 +22,7 @@ from dqnroute.constants import TORCH_MODELS_DIR
 from dqnroute.event_series import split_dataframe
 from dqnroute.generator import gen_episodes
 from dqnroute.networks.common import get_optimizer
-from dqnroute.networks.embeddings import Embedding, emb_classes
+from dqnroute.networks.embeddings import Embedding, emb_classes, QSDNE
 from dqnroute.networks.q_network import QNetwork
 from dqnroute.networks.actor_critic_networks import PPOActor, PPOCritic
 from dqnroute.simulation.common import mk_job_id, add_cols, DummyProgressbarQueue
@@ -49,11 +49,11 @@ parser = argparse.ArgumentParser(
 parser.add_argument("config_files", type=str, nargs="+",
                     help="YAML config file(s) with the conveyor topology graph, input scenario and settings "
                          "of routing algorithms (all files will be concatenated into one)")
-parser.add_argument("--routing_algorithms", type=str, default="dqn_emb,dqn_qemb,centralized_simple,link_state,simple_q,ppo_emb",
+parser.add_argument("--routing_algorithms", type=str, default="dqn_emb,centralized_simple,link_state,simple_q,ppo_emb",
                     help="comma-separated list of routing algorithms to run "
-                         "(possible entries: dqn_emb, dqn_qemb, centralized_simple, link_state, simple_q, ppo_emb, random)")
+                         "(possible entries: dqn_emb, centralized_simple, link_state, simple_q, ppo_emb, random)")
 parser.add_argument("--embeddings_alg", type=str, default="lap",
-                    help="possible node embeddings: lap, hope, node2vec")
+                    help="possible node embeddings: lap, hope, node2vec, sdne")
 parser.add_argument("--command", type=str, default="run",
                     help="possible options: run, compute_expected_cost, embedding_adversarial_search, "
                          "embedding_adversarial_verification, q_adversarial_search, q_adversarial_verification")
@@ -120,7 +120,7 @@ parser.add_argument("--linux_marabou_memory_limit_mb", type=int, default=None,
 args = parser.parse_args()
 
 # dqn_emb = DQNroute-LE, centralized_simple = BSR
-router_types_supported = 'dqn_emb dqn_qemb ppo_emb centralized_simple link_state simple_q reinforce_emb'.split(' ')
+router_types_supported = 'dqn_emb ppo_emb centralized_simple link_state simple_q reinforce_emb'.split(' ')
 router_types = args.routing_algorithms
 assert len(router_types) > 0, '--routing_algorithms cannot be empty'
 router_types = re.split(', *', args.routing_algorithms)
@@ -132,10 +132,9 @@ assert embeddings_alg_name in emb_classes, \
 EmbeddingClass = emb_classes[embeddings_alg_name]
 
 dqn_emb_exists = 'dqn_emb' in router_types
-dqn_qemb_exists = 'dqn_qemb' in router_types
 ppo_emb_exists = 'ppo_emb' in router_types
 reinforce_emb_exists = 'reinforce_emb' in router_types
-nn_loading_needed = "dqn_emb" in router_types or "dqn_qemb" in router_types or args.command != "run"
+nn_loading_needed = "dqn_emb" in router_types or args.command != "run"
 
 random_seed = args.random_seed
 
@@ -154,7 +153,7 @@ scenario = yaml.safe_load(string_scenario)
 print(f"Configuration files: {args.config_files}")
 
 router_settings = scenario["settings"]["router"]
-emb_dim = router_settings["embedding"]["dim"]
+emb_dim = router_settings[router_types[0]]["embedding"]["dim"]
 softmax_temperature = router_settings["dqn"]["softmax_temperature"]
 probability_smoothing = router_settings["dqn"]["probability_smoothing"]
 
@@ -181,19 +180,23 @@ def gen_episodes_progress(router_type, num_episodes, **kwargs):
 class CachedEmbedding(Embedding):
     def __init__(self, InnerEmbedding, dim, _dir_with_models, **kwargs):
         super().__init__(dim, **kwargs)
-        self.scope = 'torch_models/' + _dir_with_models + '_embeddings'
+        self.scope = '../torch_models/' + _dir_with_models + '_embeddings'
         os.makedirs(self.scope, exist_ok=True)
-        self.label = pretrain_filename
+        self.label = str(InnerEmbedding.__name__) + '_' + pretrain_filename
 
         self.InnerEmbedding = InnerEmbedding
         self.inner_kwargs = kwargs
         self.fit_embeddings = {}
+        self.main_emb = None
 
     def fit(self, graph, **kwargs):
         h = hash_graph(graph)
+        assert len(self.fit_embeddings) <= 1, 'too much embeddings :('
         if h not in self.fit_embeddings:
-            embed = self.InnerEmbedding(dim=self.dim, **self.inner_kwargs)
+            embed = self.InnerEmbedding(dim=self.dim, nodes_num=graph.shape[0],
+                                        n_units=[15, 12], **self.inner_kwargs)
             embed.fit(graph, **kwargs)
+            self.main_emb = embed
             self.fit_embeddings[h] = embed
 
     def transform(self, graph, idx):
@@ -242,6 +245,7 @@ def pretrain_dqn(
         pretrain_filename: str = None,
         pretrain_dataset_filename: str = None,
         use_full_topology: bool = True,
+        pretrain_emb_alg: str = 'sdne'
 ):
     def qnetwork_batches(net, data, embedding, batch_size=64):
         n = graph_size
@@ -259,6 +263,33 @@ def pretrain_dqn(
                 new_btch = []
                 for addr_, dst_, nbr_, A in zip(addr, dst, nbr, amatrices):
                     A = A.reshape(n, n)
+                    #
+                    # for beta in [1, 10, 100, 1000]:
+                    #     best_loss = None
+                    #     for n_units in ([15], [15, 12], [20, 15], [20, 15, 12]):
+                    #         for lr in [1, 0.1, 0.01, 0.001]:
+                    #             for alpha in [1e-7, 1e-6, 1e-5, 1e-4]:
+                    #                 for nu1 in [1e-4, 1e-5, 1e-3]:
+                    #                     for nu2 in [1e-4, 1e-5, 1e-3]:
+                    #                         grid_emb = QSDNE(emb_dim, A.shape[0], n_units)
+                    #                         loss = grid_emb.fit(A, encoder_lr=lr, decoder_lr=lr,
+                    #                                             alpha=alpha, beta=beta, nu1=nu1, nu2=nu2)
+                    #                         if best_loss is None or loss < best_loss:
+                    #                             best_loss = loss
+                    #                             print('!!!!!!!!new best loss!!!!!!!!!!:', best_loss)
+                    #                             print('nodes_num:', grid_emb.nodes_num)
+                    #                             print('n_units:', grid_emb.n_units)
+                    #                             print('batch_size:', batch_size)
+                    #                             print('lr:', lr)
+                    #                             print('alpha:', alpha)
+                    #                             print('beta:', beta)
+                    #                             print('nu1:', nu1)
+                    #                             print('nu2:', nu2)
+                    #                             print('-------------------------')
+                    #                         else:
+                    #                             print('loss:', loss)
+                    #                             print('-------------------------')
+                    # return
                     embedding.fit(A)
                     new_addr = embedding.transform(A, int(addr_))
                     new_dst = embedding.transform(A, int(dst_))
@@ -298,8 +329,6 @@ def pretrain_dqn(
             net.change_label(pretrain_filename)
             # net._label = pretrain_filename
             net.save()
-        if embedding is not None:
-            save_object(embedding, embedding.scope, embedding.label)
         return epochs_losses
 
     data_conv = gen_episodes_progress(
@@ -315,7 +344,8 @@ def pretrain_dqn(
     data_conv.loc[:, "working"] = 1.0
     shuffled_data = data_conv.sample(frac=1)
 
-    conv_emb = CachedEmbedding(EmbeddingClass, dim=emb_dim, _dir_with_models=dir_with_models)
+    EmbeddingClazz = emb_classes[pretrain_emb_alg]
+    conv_emb = CachedEmbedding(EmbeddingClazz, dim=emb_dim, _dir_with_models=dir_with_models)
 
     network_args = {
         'scope': dir_with_models,
@@ -331,6 +361,7 @@ def pretrain_dqn(
         embedding=conv_emb
     )
 
+    save_object(conv_emb.main_emb, conv_emb.scope, conv_emb.label)
     return conveyor_network_ng_emb_losses
 
 
@@ -344,13 +375,16 @@ def train_dqn(
         work_with_files: bool,
         retrain: bool,
         use_reinforce: bool = True,
-        use_combined_model: bool = False
+        use_combined_model: bool = False,
+        emb_alg: str = 'lap'
 ):
     scenario["settings"]["router"][router_type]["use_reinforce"] = use_reinforce
     scenario["settings"]["router"][router_type]["use_combined_model"] = use_combined_model
     scenario["settings"]["router"][router_type]["scope"] = dir_with_models
-    scenario["settings"]["router"][router_type]["embedding_scope"] = 'torch_models/' + dir_with_models + '_embeddings'
+    scenario["settings"]["router"][router_type]["embedding_scope"] = '../torch_models/' + dir_with_models + '_embeddings'
+    scenario["settings"]["router"][router_type]["embedding_load_filename"] = emb_classes[emb_alg].__name__ + '_' + pretrain_filename
     scenario["settings"]["router"][router_type]["load_filename"] = pretrain_filename
+    scenario["settings"]["router"][router_type]["embedding"]["alg"] = emb_alg
 
     if retrain:
         # TODO get rid of this environmental variable
@@ -399,7 +433,9 @@ def dqn_experiments(
 ):
     dqn_logs = []
 
-    for _ in range(n):
+    # for _ in range(n):
+    # for emb_alg in ['qsdne', 'sdne', 'node2vec', 'hope', 'lap']:
+    for emb_alg in ['qsdne', 'lap']:
         if process_pretrain:
             print('Pretraining DQN Models...')
             dqn_losses = pretrain_dqn(
@@ -409,15 +445,16 @@ def dqn_experiments(
                 pretrain_filename,
                 data_path,
                 use_full_topology=use_full_topology,
+                pretrain_emb_alg=emb_alg
             )
         else:
             print(f'Using the already pretrained model...')
-
+        # return
         if process_train:
             print('Training DQN Model...')
             dqn_log, dqn_world = train_dqn(
                 train_data_size,
-                'dqn_qemb',
+                router_types[0],
                 dir_with_models,
                 pretrain_filename,
                 train_filename,
@@ -425,21 +462,22 @@ def dqn_experiments(
                 True,
                 True,
                 use_reinforce=use_reinforce,
-                use_combined_model=use_combined_model
+                use_combined_model=use_combined_model,
+                emb_alg=emb_alg
             )
         else:
             print('Skip training process...')
 
-        dqn_logs.append(dqn_log.getSeries(add_avg=True))
+        dqn_logs.append((emb_alg, dqn_log.getSeries(add_avg=True)))
 
     return dqn_logs
 
 
 # whole pipeline
-if dqn_qemb_exists or dqn_emb_exists:
+if dqn_emb_exists:
     dqn_serieses = []
 
-    dqn_emp_config = scenario['settings']['router']['dqn_qemb' if dqn_qemb_exists else 'dqn_emb']
+    dqn_emp_config = scenario['settings']['router']['dqn_emb']
 
     dir_with_models = 'conveyor_models_dqn'
 
@@ -1025,12 +1063,12 @@ if args.command == "run":
         "networks": {
             "link_state": "Shortest paths", "simple_q": "Q-routing", "pred_q": "PQ-routing",
             "glob_dyn": "Global-dynamic", "dqn": "DQN", "dqn_oneout": "DQN (1-out)",
-            "dqn_emb": "DQN-LE", "dqn_qemb": "DQN-LE", "centralized_simple": "Centralized control", "ppo_emb": "PPO",
+            "dqn_emb": "DQN-LE", "centralized_simple": "Centralized control", "ppo_emb": "PPO",
             'reinforce_emb': 'REINFORCE'
         }, "conveyors": {
             "link_state": "Vyatkin-Black", "simple_q": "Q-routing", "pred_q": "PQ-routing",
             "glob_dyn": "Global-dynamic", "dqn": "DQN", "dqn_oneout": "DQN (1-out)",
-            "dqn_emb": "DQN-LE", "dqn_qemb": "DQN-LE", "centralized_simple": "BSR", "ppo_emb": "PPO",
+            "dqn_emb": "DQN-LE", "centralized_simple": "BSR", "ppo_emb": "PPO",
             'reinforce_emb': 'REINFORCE'
         }
     }
@@ -1047,8 +1085,8 @@ if args.command == "run":
     series_types = []
 
     def get_results(results, name):
-        global series
-        global series_types
+        # global series
+        # global series_types
 
         basic_series = None
 
@@ -1059,8 +1097,8 @@ if args.command == "run":
                 basic_series += s
         basic_series /= len(results)
 
-        series += [basic_series]
-        series_types += [name]
+        # series += [basic_series]
+        # series_types += [name]
 
         print(f'{name} mean delivery time: {np.mean(basic_series["time_avg"])}')
         print(f'{name} mean energy consumption: {np.mean(basic_series["energy_avg"])}')
@@ -1068,8 +1106,9 @@ if args.command == "run":
 
         return basic_series
 
-    if dqn_emb_exists or dqn_qemb_exists:
-        single_series = get_results(dqn_single_model_results, 'DQN-LE-SINGLE')
+    if dqn_emb_exists:
+        pass
+        single_series = get_results([res[1] for res in dqn_single_model_results], 'DQN-LE-SINGLE')
         # combined_series = get_results(dqn_combined_model_results, 'DQN-LE-COMBINED')
 
 
@@ -1093,11 +1132,14 @@ if args.command == "run":
 
     # perform training/simulation with other approaches
     for router_type in router_types:
-        if router_type != "dqn_emb" and router_type != "dqn_qemb" \
-                and router_type != 'ppo_emb' and router_type != 'reinforce_emb':
+        if router_type != "dqn_emb" and router_type != 'ppo_emb' and router_type != 'reinforce_emb':
             s, _ = train(train_data_size, router_type, random_seed)
             series += [s.getSeries(add_avg=True)]
             series_types += [router_type]
+
+    for (emb_alg, result) in dqn_single_model_results:
+        series_types += [emb_alg]
+        series += [result]
 
     dfs = []
     for router_type, s in zip(series_types, series):
@@ -1154,7 +1196,7 @@ if args.command == "run":
         if save_path is not None:
             fig.savefig(f"../img/{save_path}", bbox_inches="tight")
 
-
+    dfs.reset_index(drop=True, inplace=True)
     plot_data(dfs, figsize=(14, 8), font_size=22,
               time_save_path="time-plot.pdf",
               energy_save_path="energy-plot.pdf",

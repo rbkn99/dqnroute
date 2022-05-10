@@ -32,9 +32,9 @@ settings:
         - tag: 'amatrix'
       batch_size: 1
       mem_capacity: 1
-      softmax_temperature: 1.5 # added by Igor
-      probability_smoothing: 0.01 # added by Igor
-      use_single_neural_network: False # added by Igor
+      softmax_temperature: 1.5
+      probability_smoothing: 0.01
+      use_single_neural_network: False
     dqn_oneout:
       <<: *dqn
     dqn_emb:
@@ -42,36 +42,4 @@ settings:
       energy_reward_weight: 0.5
       additional_inputs: []
       embedding:
-        alg: 'sdne'
         dim: 10
-    ppo_emb:
-      distance_function: 'euclid'
-      energy_reward_weight: 0.5
-      additional_inputs:
-        - tag: 'amatrix'
-      actor:
-        optimizer: 'adam'
-        layers: [ 64, 64 ]
-        activation: 'relu'
-      critic:
-        optimizer: 'adam'
-        layers: [ 64, 64 ]
-        activation: 'relu'
-      embedding:
-        alg: 'node2vec'
-        dim: 10
-    reinforce_emb:
-      distance_function: 'euclid'
-      energy_reward_weight: 0.5
-      additional_inputs:
-        - tag: 'amatrix'
-      actor:
-        optimizer: 'adam'
-        layers: [ 64, 64 ]
-        activation: 'relu'
-      embedding:
-        alg: 'sdne'
-        dim: 10
-    embedding:
-      alg: 'sdne'
-      dim: 10

@@ -128,7 +128,7 @@ class DQNRouter(LinkStateRouter, RewardAgent):
         while ('router', to) not in allowed_nbrs:
             to = sample_distr(distr)
 
-        return ('router', to), estimate, state, (self.id[1], pkg.dst[1])
+        return ('router', to), estimate, state, (self.id[1], pkg.dst[1], to[1])
 
     def _predict(self, x):
         self.brain.eval()
@@ -222,7 +222,7 @@ class DQNRouterOO(DQNRouter):
 
         saved_state = [s[to_idx] for s in state]
         to = allowed_nbrs[to_idx]
-        return to, estimate, saved_state, (self.id[1], pkg.dst[1])
+        return to, estimate, saved_state, (self.id[1], pkg.dst[1], to[1])
 
     def _nodeRepr(self, node):
         return np.array(node)
@@ -257,9 +257,9 @@ class DQNRouterEmb(DQNRouterOO):
         self.prev_num_edges = 0
         self.init_edges_num = edges_num
         self.network_initialized = False
-        # if 'load_filename' in kwargs and 'embedding_scope' in kwargs:
-        #     self.embedding = load_object(kwargs['embedding_scope'], kwargs['load_filename'])
-        if type(embedding) == dict:
+        if 'embedding_load_filename' in kwargs and 'embedding_scope' in kwargs:
+            self.embedding = load_object(kwargs['embedding_scope'], kwargs['embedding_load_filename'])
+        elif type(embedding) == dict:
             self.embedding = get_embedding(**embedding)
         else:
             self.embedding = embedding
@@ -295,71 +295,94 @@ class DQNRouterEmb(DQNRouterOO):
 
 
 class EmbGlobalInstance(object):
-    def __init__(self, embedding, emb_batch_size):
+    def __init__(self, embedding, emb_batch_size, use_single=True):
         self.embedding = embedding
         self.emb_batch_size = emb_batch_size
-        self.adj_batch = None
+        self.adj_batch = np.zeros((embedding.nodes_num, self.embedding.dim))
         self.replay_counter = 0
-        self.network_initialized = False
+        self.use_single = use_single
         self.nodes_len = 0
         self.network = None
+        self.network_initialized = False
 
-    def fit_emb(self, network):
-        if self.network_initialized:
+    def fit_emb(self, network, state_changed=False):
+        if self.network_initialized and self.use_single and not state_changed:
             return
+        # if self.network_initialized:
+        #     return
+        # self.network_initialized = True
+        # self.adj_batch = np.zeros((len(network.nodes), self.embedding.dim))
+        # self.replay_counter = 0
+        print('fit qemb')
         self.network_initialized = True
-        self.adj_batch = np.zeros((len(network.nodes), self.embedding.dim))
-        self.replay_counter = 0
         self.network = network
         self.nodes_len = len(network.nodes)
-        self.embedding.fit(network)
+        self.embedding.fit(network, epoch=50, encoder_lr=0.0001, decoder_lr=0.001)
 
-    def update(self, agents, batch_size, addr_grad, dst_grad):
+    def update(self, agents, batch_size, addr_grad, dst_grad, nbr_grad):
         self.adj_batch[agents[0][0], :] += addr_grad.detach().numpy()[0]
         self.adj_batch[agents[0][1], :] += dst_grad.detach().numpy()[0]
+        self.adj_batch[agents[0][2], :] += nbr_grad.detach().numpy()[0]
         self.replay_counter += 1
         if self.replay_counter >= self.emb_batch_size:
-            assert isinstance(self.embedding, SDNE), 'QEmb currently supports SDNE only!'
+            # print('propagate gradient')
+            assert isinstance(self.embedding, QSDNE), 'QEmb currently supports SDNE only!'
             self.replay_counter = 0
             self.embedding.propagate(self.network, torch.from_numpy(self.adj_batch))
             self.adj_batch = np.zeros((self.nodes_len, self.embedding.dim))
 
 
-embInstance: EmbGlobalInstance = None
+# embInstance: EmbGlobalInstance = None
 
 
 class DQNRouterQEmb(DQNRouterEmb):
-    def __init__(self, embedding: Union[dict, Embedding], edges_num: int, emb_batch_size=64, **kwargs):
+    def __init__(self, embedding: Union[dict, Embedding], edges_num: int, emb_batch_size=1, **kwargs):
         super().__init__(embedding, edges_num, **kwargs)
-        global embInstance
-        if embInstance is None:
-            embInstance = EmbGlobalInstance(self.embedding, emb_batch_size)
+        # global embInstance
+        if isinstance(self.embedding, QSDNE):
+            self.embInstance = EmbGlobalInstance(self.embedding, emb_batch_size)
 
     def networkStateChanged(self):
+        if not isinstance(self.embedding, QSDNE):
+            return super().networkStateChanged()
         num_nodes = len(self.network.nodes)
         num_edges = len(self.network.edges)
         if not self.network_initialized and num_nodes == len(self.nodes) and num_edges == self.init_edges_num:
-            embInstance.fit_emb(self.network)
+            self.network_initialized = True
+            # embInstance.fit_emb(self.network)
+        if self.network_initialized and (num_edges != self.prev_num_edges or num_nodes != self.prev_num_nodes):
+            print('network changed, fit emb')
+            self.prev_num_nodes = num_nodes
+            self.prev_num_edges = num_edges
+            self.embInstance.fit_emb(self.network, state_changed=True)
 
     def _train(self, x, y):
+        if not isinstance(self.embedding, QSDNE):
+            return super()._train(x, y)
         self.brain.train()
         self.optimizer.zero_grad()
         addr, dst = torch.from_numpy(x[0]), torch.from_numpy(x[1])
+        nbrs = list(map(torch.from_numpy, x[2:]))
         addr.requires_grad = True
         dst.requires_grad = True
-        output = self.brain(addr, dst, *map(torch.from_numpy, x[2:]))
+        nbrs[0].requires_grad = True
+        output = self.brain(addr, dst, *nbrs)
         loss = self.loss_func(output, torch.from_numpy(y))
         loss.backward()
         self.optimizer.step()
-        return float(loss), addr.grad, dst.grad
+        return float(loss), addr.grad, dst.grad, nbrs[0].grad
 
     def _replay(self):
+        if not isinstance(self.embedding, QSDNE):
+            return super()._replay()
         states, _, values, agents = self._sampleMemStacked()
-        _, addr_grad, dst_grad = self._train(states, np.expand_dims(np.array(values, dtype=np.float32), axis=0))
-        embInstance.update(agents, self.batch_size, addr_grad, dst_grad)
+        _, addr_grad, dst_grad, nbr_grad = self._train(states, np.expand_dims(np.array(values, dtype=np.float32), axis=0))
+        self.embInstance.update(agents, self.batch_size, addr_grad, dst_grad, nbr_grad)
 
     def _nodeRepr(self, node):
-        return embInstance.embedding.transform(node).astype(np.float32)
+        if not isinstance(self.embedding, QSDNE):
+            return super()._nodeRepr(node)
+        return self.embInstance.embedding.transform(node).astype(np.float32)
 
 
 class DQNRouterNetwork(NetworkRewardAgent, DQNRouter):

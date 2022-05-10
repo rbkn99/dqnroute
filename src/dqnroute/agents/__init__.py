@@ -22,8 +22,7 @@ _network_router_classes = {
     'glob_dyn': GlobalDynamicRouter,
     'dqn': DQNRouterNetwork,
     'dqn_oneout': DQNRouterOONetwork,
-    'dqn_emb': DQNRouterEmbNetwork,
-    'dqn_qemb': DQNRouterQEmbNetwork,
+    'dqn_emb': DQNRouterQEmbNetwork,
     'ppo_emb': PPORouterEmbNetwork,
     'reinforce_emb': ReinforceNetwork,
 }
@@ -36,8 +35,7 @@ _conveyors_router_classes = {
     'dqn': DQNRouterConveyor,
     'dqn_oneout': DQNRouterOOConveyor,
     'centralized_simple': (CentralizedController, CentralizedOracle),
-    'dqn_emb': DQNRouterEmbNetwork,
-    'dqn_qemb': DQNRouterQEmbNetwork,
+    'dqn_emb': DQNRouterQEmbNetwork,
     'ppo_emb': PPORouterEmbConveyor,
     'reinforce_emb': ReinforceConveyor,
 }

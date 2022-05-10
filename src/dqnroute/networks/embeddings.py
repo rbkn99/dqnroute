@@ -190,45 +190,53 @@ class Node2VecWrapper(Embedding):
 
 
 class SDNE(Embedding):
-    def __init__(self, dim, **kwargs):
+    def __init__(self, dim, nodes_num, n_units, **kwargs):
         super().__init__(dim, **kwargs)
         self.dim = dim
-        self.model = None
+        self.nodes_num = nodes_num
+        self.n_units = n_units
+        self.model = DynGEM(nodes_num, dim, n_units=n_units)
         self.graph = None
 
     def fit(self, graph: Union[nx.DiGraph, np.ndarray],
-            n_units=None, epoch=20, batch_size = 64,
-            lr=0.01, weight_decay=0, alpha=1e-5, beta=10, nu1=1e-4, nu2=1e-4, **kwargs):
-        if n_units is None:
-            n_units = [15]
+            epoch=500, batch_size=64,
+            encoder_lr=0.01, decoder_lr=0.01, weight_decay=0, alpha=1e-6, beta=100, nu1=1e-5, nu2=1e-4, **kwargs):
         if type(graph) == np.ndarray:
             graph = nx.from_numpy_array(graph, create_using=nx.DiGraph)
-        self.graph = nx.adjacency_matrix(nx.relabel_nodes(graph.to_undirected(), agent_idx))
-        self.model = DynGEM(self.graph.shape[0], self.dim, n_units=n_units)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
-        optimizer.zero_grad()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.graph = nx.adjacency_matrix(nx.relabel_nodes(graph.to_undirected(), agent_idx))
+
+        encoder_optimizer = torch.optim.Adam(self.model.encoder.parameters(), lr=encoder_lr, weight_decay=weight_decay)
+        decoder_optimizer = torch.optim.Adam(self.model.decoder.parameters(), lr=decoder_lr, weight_decay=weight_decay)
+        encoder_optimizer.zero_grad()
+        decoder_optimizer.zero_grad()
         loss_model = DynGEMLoss(alpha, beta, nu1, nu2)
         batch_generator = DynGEMBatchGenerator(batch_size, beta)
+        loss = None
         for i in range(epoch):
             generator = batch_generator.generate(self.graph)
             loss_input_list = self._get_model_res(generator)
             loss = loss_model(self.model, loss_input_list)
             loss.backward()
-            optimizer.step()
+            encoder_optimizer.step()
+            decoder_optimizer.step()
             self.model.zero_grad()
-            # print("epoch", i + 1, ', loss:', loss.item())
+            print("epoch", i + 1, ', loss:', loss.item())
+        return loss.item()
 
     def propagate(self, graph, gradient, lr=0.01, weight_decay=0):
         if type(graph) == np.ndarray:
             graph = nx.from_numpy_array(graph, create_using=nx.DiGraph)
-        self.graph = nx.adjacency_matrix(nx.relabel_nodes(graph.to_undirected(), agent_idx))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.graph = nx.adjacency_matrix(nx.relabel_nodes(graph.to_undirected(), agent_idx))
         optimizer = torch.optim.Adam(self.model.encoder.parameters(), lr=lr, weight_decay=weight_decay)
         optimizer.zero_grad()
         output = self.model.encoder(torch.from_numpy(self.graph.toarray()).float())
         output.backward(gradient=gradient)
         optimizer.step()
         self.model.zero_grad()
-
 
     def transform(self, idx):
         row = torch.from_numpy(self.graph[idx].toarray()).float()
@@ -241,11 +249,17 @@ class SDNE(Embedding):
         return [xi_pred, xi_batch, yi_batch, xj_pred, xj_batch, yj_batch, hx_i, hx_j, value_batch]
 
 
+class QSDNE(SDNE):
+    def __init__(self, dim, nodes_num, n_units, **kwargs):
+        super().__init__(dim, nodes_num, n_units, **kwargs)
+
+
 emb_classes = {
     'hope': HOPEEmbedding,
     'lap': LaplacianEigenmap,
     'node2vec': Node2VecWrapper,
-    'sdne': SDNE
+    'sdne': SDNE,
+    'qsdne': QSDNE
 }
 
 

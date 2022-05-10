@@ -38,7 +38,7 @@ class SimpleQRouter(Router, RewardAgent):
 
     def handleMsgFrom(self, sender: AgentId, msg: Message) -> List[Message]:
         if isinstance(msg, RewardMsg):
-            action, Q_new, dst = self.receiveReward(msg)
+            action, Q_new, dst, _ = self.receiveReward(msg)
             self.Q[dst][action] += self.learning_rate * (Q_new - self.Q[dst][action])
             return []
         else:
