@@ -308,6 +308,10 @@ class EmbGlobalInstance(object):
     def fit_emb(self, network, state_changed=False):
         if self.network_initialized and self.use_single and not state_changed:
             return
+        if self.replay_counter > 0:
+            self.replay_counter = 0
+            self.embedding.propagate(self.network, torch.from_numpy(self.adj_batch))
+            self.adj_batch = np.zeros((self.nodes_len, self.embedding.dim))
         # if self.network_initialized:
         #     return
         # self.network_initialized = True
@@ -317,7 +321,7 @@ class EmbGlobalInstance(object):
         self.network_initialized = True
         self.network = network
         self.nodes_len = len(network.nodes)
-        self.embedding.fit(network, epoch=50, encoder_lr=0.0001, decoder_lr=0.001)
+        self.embedding.fit(network, epoch=100, encoder_lr=0.001, decoder_lr=0.01)
 
     def update(self, agents, batch_size, addr_grad, dst_grad, nbr_grad):
         self.adj_batch[agents[0][0], :] += addr_grad.detach().numpy()[0]
@@ -336,7 +340,7 @@ class EmbGlobalInstance(object):
 
 
 class DQNRouterQEmb(DQNRouterEmb):
-    def __init__(self, embedding: Union[dict, Embedding], edges_num: int, emb_batch_size=1, **kwargs):
+    def __init__(self, embedding: Union[dict, Embedding], edges_num: int, emb_batch_size=16, **kwargs):
         super().__init__(embedding, edges_num, **kwargs)
         # global embInstance
         if isinstance(self.embedding, QSDNE):

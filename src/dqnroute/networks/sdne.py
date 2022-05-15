@@ -117,8 +117,18 @@ class DynGEMLoss(nn.Module):
         hx_i, hx_j, edge_weight = input_list[6], input_list[7], input_list[8]
 
         node_num = xj_pred.shape[1]
-        xi_loss = torch.mean(torch.sum(torch.square((xi_pred - x_i) * penalty_i[:, 0:node_num]), dim=1) / penalty_i[:, node_num])
-        xj_loss = torch.mean(torch.sum(torch.square((xj_pred - x_j) * penalty_j[:, 0:node_num]), dim=1) / penalty_j[:, node_num])
+
+        eps = 1e-5
+
+        old_penalty_i = penalty_i
+        old_penalty_j = penalty_j
+        penalty_i = torch.ones(x_i.shape, device=x_i.device)
+        penalty_j = torch.ones(x_j.shape, device=x_j.device)
+        penalty_i[(x_i != 0) & ((xi_pred < eps) & (xi_pred > -eps))] = self.beta
+        penalty_j[(x_j != 0) & ((xj_pred < eps) & (xj_pred > -eps))] = self.beta
+
+        xi_loss = torch.mean(torch.sum(torch.square((xi_pred - x_i) * penalty_i[:, 0:node_num]), dim=1) / old_penalty_i[:, node_num])
+        xj_loss = torch.mean(torch.sum(torch.square((xj_pred - x_j) * penalty_j[:, 0:node_num]), dim=1) / old_penalty_j[:, node_num])
 
         hx_loss = torch.mean(torch.sum(torch.square(hx_i - hx_j), dim=1) * edge_weight)
 

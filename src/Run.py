@@ -17,6 +17,7 @@ import pandas as pd
 import torch
 
 import networkx as nx
+from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 
 from dqnroute.constants import TORCH_MODELS_DIR
 from dqnroute.event_series import split_dataframe
@@ -136,6 +137,7 @@ ppo_emb_exists = 'ppo_emb' in router_types
 reinforce_emb_exists = 'reinforce_emb' in router_types
 nn_loading_needed = "dqn_emb" in router_types or args.command != "run"
 
+n_launches = 5
 random_seed = args.random_seed
 
 # Create directories for logs and results
@@ -194,7 +196,7 @@ class CachedEmbedding(Embedding):
         assert len(self.fit_embeddings) <= 1, 'too much embeddings :('
         if h not in self.fit_embeddings:
             embed = self.InnerEmbedding(dim=self.dim, nodes_num=graph.shape[0],
-                                        n_units=[15, 12], **self.inner_kwargs)
+                                        n_units=[15], **self.inner_kwargs)
             embed.fit(graph, **kwargs)
             self.main_emb = embed
             self.fit_embeddings[h] = embed
@@ -264,31 +266,23 @@ def pretrain_dqn(
                 for addr_, dst_, nbr_, A in zip(addr, dst, nbr, amatrices):
                     A = A.reshape(n, n)
                     #
-                    # for beta in [1, 10, 100, 1000]:
-                    #     best_loss = None
-                    #     for n_units in ([15], [15, 12], [20, 15], [20, 15, 12]):
-                    #         for lr in [1, 0.1, 0.01, 0.001]:
-                    #             for alpha in [1e-7, 1e-6, 1e-5, 1e-4]:
-                    #                 for nu1 in [1e-4, 1e-5, 1e-3]:
-                    #                     for nu2 in [1e-4, 1e-5, 1e-3]:
-                    #                         grid_emb = QSDNE(emb_dim, A.shape[0], n_units)
-                    #                         loss = grid_emb.fit(A, encoder_lr=lr, decoder_lr=lr,
-                    #                                             alpha=alpha, beta=beta, nu1=nu1, nu2=nu2)
-                    #                         if best_loss is None or loss < best_loss:
-                    #                             best_loss = loss
-                    #                             print('!!!!!!!!new best loss!!!!!!!!!!:', best_loss)
-                    #                             print('nodes_num:', grid_emb.nodes_num)
-                    #                             print('n_units:', grid_emb.n_units)
-                    #                             print('batch_size:', batch_size)
-                    #                             print('lr:', lr)
-                    #                             print('alpha:', alpha)
-                    #                             print('beta:', beta)
-                    #                             print('nu1:', nu1)
-                    #                             print('nu2:', nu2)
-                    #                             print('-------------------------')
-                    #                         else:
-                    #                             print('loss:', loss)
-                    #                             print('-------------------------')
+                    # def f(params):
+                    #     grid_emb = QSDNE(emb_dim, A.shape[0], params['n_units'])
+                    #     loss = grid_emb.fit(A, encoder_lr=params['lr'], decoder_lr=params['lr'],
+                    #                         alpha=params['alpha'], beta=params['beta'])
+                    #     return {'loss': loss, 'status': STATUS_OK}
+                    #
+                    # space_emb = {
+                    #     'n_units': hp.choice('n_units', ([15], [15, 12], [20, 15], [20, 15, 12])),
+                    #     'lr': hp.loguniform('lr', np.log(0.001), np.log(0.5)),
+                    #     'alpha': hp.loguniform('alpha', np.log(1e-7), np.log(1e-4)),
+                    #     'beta': hp.quniform('beta', 10, 100, 1),
+                    #     'nu1': hp.loguniform('nu1', np.log(1e-5), np.log(1e-3)),
+                    #     'nu2': hp.loguniform('nu2', np.log(1e-5), np.log(1e-3)),
+                    # }
+                    # trials = Trials()
+                    # best = fmin(f, space_emb, algo=tpe.suggest, max_evals=200, trials=trials)
+                    # print('best:', best)
                     # return
                     embedding.fit(A)
                     new_addr = embedding.transform(A, int(addr_))
@@ -431,45 +425,48 @@ def dqn_experiments(
         process_pretrain: bool = True,
         process_train: bool = True
 ):
-    dqn_logs = []
+    dqn_logs = {}
 
-    # for _ in range(n):
-    # for emb_alg in ['qsdne', 'sdne', 'node2vec', 'hope', 'lap']:
-    for emb_alg in ['qsdne', 'lap']:
-        if process_pretrain:
-            print('Pretraining DQN Models...')
-            dqn_losses = pretrain_dqn(
-                pretrain_data_size,
-                pretrain_epochs_num,
-                dir_with_models,
-                pretrain_filename,
-                data_path,
-                use_full_topology=use_full_topology,
-                pretrain_emb_alg=emb_alg
-            )
-        else:
-            print(f'Using the already pretrained model...')
-        # return
-        if process_train:
-            print('Training DQN Model...')
-            dqn_log, dqn_world = train_dqn(
-                train_data_size,
-                router_types[0],
-                dir_with_models,
-                pretrain_filename,
-                train_filename,
-                random_seed,
-                True,
-                True,
-                use_reinforce=use_reinforce,
-                use_combined_model=use_combined_model,
-                emb_alg=emb_alg
-            )
-        else:
-            print('Skip training process...')
+    for it in range(n):
+        print('iteration:', it+1)
+        # for emb_alg in ['qsdne', 'sdne', 'node2vec', 'hope', 'lap']:
+        for emb_alg in ['lap', 'node2vec', 'sdne', 'qsdne']:
+            if emb_alg not in dqn_logs:
+                dqn_logs[emb_alg] = []
+        # for emb_alg in ['qsdne']:
+            if process_pretrain:
+                print('Pretraining DQN Models...')
+                dqn_losses = pretrain_dqn(
+                    pretrain_data_size,
+                    pretrain_epochs_num,
+                    dir_with_models,
+                    pretrain_filename,
+                    data_path,
+                    use_full_topology=use_full_topology,
+                    pretrain_emb_alg=emb_alg
+                )
+            else:
+                print(f'Using the already pretrained model...')
+            # return
+            if process_train:
+                print('Training DQN Model...')
+                dqn_log, dqn_world = train_dqn(
+                    train_data_size,
+                    router_types[0],
+                    dir_with_models,
+                    pretrain_filename,
+                    train_filename,
+                    random_seed,
+                    True,
+                    True,
+                    use_reinforce=use_reinforce,
+                    use_combined_model=use_combined_model,
+                    emb_alg=emb_alg
+                )
+            else:
+                print('Skip training process...')
 
-        dqn_logs.append((emb_alg, dqn_log.getSeries(add_avg=True)))
-
+            dqn_logs[emb_alg].append(dqn_log.getSeries(add_avg=True))
     return dqn_logs
 
 
@@ -496,7 +493,7 @@ if dqn_emb_exists:
     print(f'Model: {pretrain_path}')
 
     # dqn_combined_model_results = dqn_experiments(1, True, True, True, True, True)
-    dqn_single_model_results = dqn_experiments(1, False, True, True, True, True)
+    dqn_single_model_results = dqn_experiments(n_launches, False, True, True, True, True)
 
 
 # PPO part (pre-train + train)
@@ -1085,8 +1082,8 @@ if args.command == "run":
     series_types = []
 
     def get_results(results, name):
-        # global series
-        # global series_types
+        global series
+        global series_types
 
         basic_series = None
 
@@ -1097,8 +1094,8 @@ if args.command == "run":
                 basic_series += s
         basic_series /= len(results)
 
-        # series += [basic_series]
-        # series_types += [name]
+        series += [basic_series]
+        series_types += [name]
 
         print(f'{name} mean delivery time: {np.mean(basic_series["time_avg"])}')
         print(f'{name} mean energy consumption: {np.mean(basic_series["energy_avg"])}')
@@ -1107,8 +1104,8 @@ if args.command == "run":
         return basic_series
 
     if dqn_emb_exists:
-        pass
-        single_series = get_results([res[1] for res in dqn_single_model_results], 'DQN-LE-SINGLE')
+        for emb_alg in dqn_single_model_results:
+            get_results(dqn_single_model_results[emb_alg], emb_alg)
         # combined_series = get_results(dqn_combined_model_results, 'DQN-LE-COMBINED')
 
 
@@ -1137,9 +1134,16 @@ if args.command == "run":
             series += [s.getSeries(add_avg=True)]
             series_types += [router_type]
 
-    for (emb_alg, result) in dqn_single_model_results:
-        series_types += [emb_alg]
-        series += [result]
+    # for (emb_alg, result) in dqn_single_model_results:
+    #     result = result.fillna(0).sort_values(by=['time_time'])
+    #     if emb_alg not in series_types:
+    #         series_types += [emb_alg]
+    #         series += [result]
+    #     else:
+    #         i = series_types.index(emb_alg)
+    #         series[i] = series[i].add(result, fill_value=0)
+    # for i in range(len(series)):
+    #     series[i] /= n_launches
 
     dfs = []
     for router_type, s in zip(series_types, series):
@@ -1197,6 +1201,7 @@ if args.command == "run":
             fig.savefig(f"../img/{save_path}", bbox_inches="tight")
 
     dfs.reset_index(drop=True, inplace=True)
+    dfs.to_csv('/Users/rbkn99/Desktop/dqnroute/history/final.csv', index=False)
     plot_data(dfs, figsize=(14, 8), font_size=22,
               time_save_path="time-plot.pdf",
               energy_save_path="energy-plot.pdf",

@@ -199,8 +199,8 @@ class SDNE(Embedding):
         self.graph = None
 
     def fit(self, graph: Union[nx.DiGraph, np.ndarray],
-            epoch=500, batch_size=64,
-            encoder_lr=0.01, decoder_lr=0.01, weight_decay=0, alpha=1e-6, beta=100, nu1=1e-5, nu2=1e-4, **kwargs):
+            epoch=100, batch_size=64,
+            encoder_lr=0.02, decoder_lr=0.02, weight_decay=0, alpha=2e-7, beta=10, nu1=0.0003, nu2=1e-5, **kwargs):
         if type(graph) == np.ndarray:
             graph = nx.from_numpy_array(graph, create_using=nx.DiGraph)
         with warnings.catch_warnings():

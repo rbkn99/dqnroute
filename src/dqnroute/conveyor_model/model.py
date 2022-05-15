@@ -215,7 +215,7 @@ class ConveyorModel:
 
     def setSpeed(self, speed: float):
         assert speed >= 0 and speed <= self.max_speed, \
-            "Speed is not in [0, max_speed]!"
+            f"Speed '{speed}' is not in [0, max_speed]!"
         if self.speed != speed:
             self._stateTransfer('change')
             self.speed = speed
